@@ -48,15 +48,28 @@ def main():
     from supabase import create_client
     sb = create_client(SUPABASE_URL, SUPABASE_SERVICE_KEY)
 
-    ok, error = 0, 0
+    ok, error, saltados = 0, 0, 0
 
     # ── 1. Santa Marta, desde el zip de respaldo ─────────────────────
+    # (revisa primero que exista en Supabase antes de subir -- igual que la
+    # seccion 2 -- para no volver a mandar los mismos 6 archivos cada vez
+    # que se corre el script)
     print(f"=== Santa Marta (desde {os.path.basename(ZIP_SANTA_MARTA)}) ===")
+    try:
+        existentes_sm = {
+            it.get("name") for it in sb.storage.from_(BUCKET).list(CARPETA_SANTA_MARTA)
+        }
+    except Exception:
+        existentes_sm = set()
+
     with zipfile.ZipFile(ZIP_SANTA_MARTA) as z:
         for name in z.namelist():
             if not name.lower().endswith(".tiff"):
                 continue
             archivo = os.path.basename(name)
+            if archivo in existentes_sm:
+                saltados += 1
+                continue  # ya esta en Supabase, no volver a subir
             destino = f"{CARPETA_SANTA_MARTA}/{archivo}"
             data = z.read(name)
             if subir(sb, destino, data):
@@ -84,6 +97,7 @@ def main():
             if not archivo.endswith(".tiff"):
                 continue
             if archivo in existentes_remoto:
+                saltados += 1
                 continue  # ya esta en Supabase, no volver a subir
 
             ruta_local = os.path.join(ruta_carpeta, archivo)
@@ -97,6 +111,7 @@ def main():
 
     print(f"\n--- Resumen ---")
     print(f"  Subidas OK : {ok}")
+    print(f"  Ya existian (saltadas): {saltados}")
     print(f"  Errores    : {error}")
 
 
