@@ -60,9 +60,18 @@ PROJECT_METADATA_SHEET_NAME = os.getenv(
 AZURE_CONN_STR  = os.getenv("AZURE_STORAGE_CONNECTION_STRING")
 AZURE_CONTAINER = os.getenv("AZURE_CONTAINER", "imagenes-sentinel")
 
-# "azure" (default, produccion) o "local": lee las imagenes de una carpeta en
-# disco en vez de Azure Blob Storage. Util para probar sin credenciales/acceso
-# de Azure -- ver descargar_local.py para descargar a esa misma carpeta.
+# Supabase Storage: respaldo temporal mientras la cuenta de Azure este
+# deshabilitada. Se usa la anon key (solo lectura) a proposito -- app.py nunca
+# escribe, solo lee, asi que no necesita ni debe tener la service_role key
+# (esa se usa unicamente en scripts locales de subida, nunca aqui).
+SUPABASE_URL      = os.getenv("SUPABASE_URL")
+SUPABASE_ANON_KEY = os.getenv("SUPABASE_ANON_KEY")
+SUPABASE_BUCKET   = os.getenv("SUPABASE_BUCKET", "sentinel-images")
+
+# "azure" (default, produccion), "supabase" (respaldo temporal) o "local": lee
+# las imagenes de una carpeta en disco en vez de un servicio remoto. Util para
+# probar sin credenciales/acceso -- ver descargar_local.py para descargar a
+# esa misma carpeta.
 IMAGE_STORAGE_MODE = os.getenv("IMAGE_STORAGE_MODE", "azure").strip().lower()
 LOCAL_IMAGES_DIR    = os.getenv("LOCAL_IMAGES_DIR", "Imagenes")
 
@@ -237,10 +246,43 @@ def _listar_imagenes_local(bpin: str, tramo_slug: str | None) -> list[dict]:
     return result
 
 
+@st.cache_resource(show_spinner=False)
+def _supabase_client():
+    from supabase import create_client
+    return create_client(SUPABASE_URL, SUPABASE_ANON_KEY)
+
+
+def _listar_imagenes_supabase(bpin: str, tramo_slug: str | None) -> list[dict]:
+    carpeta = carpeta_sentinel(bpin, tramo_slug)
+    result = []
+    try:
+        sb = _supabase_client()
+        for item in sb.storage.from_(SUPABASE_BUCKET).list(carpeta):
+            filename = item.get("name", "")
+            if not filename.lower().endswith((".tiff", ".tif")):
+                continue
+            fecha = parsear_fecha_archivo(filename)
+            result.append({
+                # "bucket_path" aqui es la ruta dentro del bucket de Supabase
+                # (carpeta/archivo), igual de conceptualmente que en modo azure.
+                "bucket_path": f"{carpeta}/{filename}",
+                "filename":    filename,
+                "fecha":       fecha,
+                "label":       fecha.strftime("%b %Y") if fecha else Path(filename).stem,
+            })
+    except Exception as e:
+        st.error(f"Error accessing Supabase Storage: {e}")
+        return []
+    result.sort(key=lambda x: x["fecha"] or datetime.min)
+    return result
+
+
 @st.cache_data(ttl=300, show_spinner=False)
 def listar_imagenes(bpin: str, tramo_slug: str | None = None) -> list[dict]:
     if IMAGE_STORAGE_MODE == "local":
         return _listar_imagenes_local(bpin, tramo_slug)
+    if IMAGE_STORAGE_MODE == "supabase":
+        return _listar_imagenes_supabase(bpin, tramo_slug)
     return _listar_imagenes_azure(bpin, tramo_slug)
 
 
@@ -249,6 +291,17 @@ def descargar_tiff_temp(bucket_path: str) -> str | None:
     if IMAGE_STORAGE_MODE == "local":
         # bucket_path ya es una ruta real en disco (ver _listar_imagenes_local).
         return bucket_path if os.path.exists(bucket_path) else None
+    if IMAGE_STORAGE_MODE == "supabase":
+        try:
+            sb = _supabase_client()
+            data = sb.storage.from_(SUPABASE_BUCKET).download(bucket_path)
+            tmp = tempfile.NamedTemporaryFile(delete=False, suffix=".tiff")
+            with open(tmp.name, "wb") as f:
+                f.write(data)
+            return tmp.name
+        except Exception as e:
+            st.error(f"Failed to download {bucket_path} from Supabase: {e}")
+            return None
     try:
         container_client = _azure_container_client()
         blob_client = container_client.get_blob_client(bucket_path)
@@ -534,8 +587,12 @@ proj_lon = tramo_activo["lon"]
 
 imagenes = listar_imagenes(bpin_input, tramo_activo.get("tramo_slug"))
 if not imagenes:
+    fuente = {
+        "local": "la carpeta local",
+        "supabase": "Supabase Storage",
+    }.get(IMAGE_STORAGE_MODE, "Azure Blob Storage")
     st.warning(
-        f"No hay imagenes en Azure Blob Storage para BPIN {bpin_input} "
+        f"No hay imagenes en {fuente} para BPIN {bpin_input} "
         f"(tramo: {tramo_activo['nombre_tramo']})."
     )
     st.stop()

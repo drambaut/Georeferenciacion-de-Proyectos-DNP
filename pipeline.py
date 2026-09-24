@@ -60,7 +60,13 @@ AZURE_CONTAINER = os.getenv("AZURE_CONTAINER", "imagenes-sentinel")
 STATE_PATH = Path("pipeline_state.json")   # audit log only, not source of truth
 LOG_PATH   = Path("pipeline_log.txt")
 
-BORRAR_LOCAL_TRAS_SUBIR = True
+# False por decision explicita: la version original borraba la copia local
+# apenas se subia con exito a Azure. El 2026-09-24 eso dejo sin ninguna copia
+# de respaldo 85 de 91 imagenes cuando la cuenta de Azure quedo deshabilitada
+# por un problema de facturacion ajeno a este proyecto -- las imagenes locales
+# eran la unica red de seguridad y ya no estaban. Mejor gastar disco de mas
+# que perder datos que tardan horas en volver a descargarse de Copernicus.
+BORRAR_LOCAL_TRAS_SUBIR = False
 
 # ─────────────────────────────────────────────────────────────────
 
