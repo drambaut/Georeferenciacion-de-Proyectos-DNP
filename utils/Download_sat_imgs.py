@@ -26,7 +26,7 @@ DESCARGA = {
     "2026": ["02", "05", "08"],
 }
 
-MAX_NUBOSIDAD           = 50
+MAX_NUBOSIDAD           = 25
 KM_BUFFER               = 5
 CARPETA_SALIDA          = "Imagenes"
 PAUSA_ENTRE_DESCARGAS   = 5
