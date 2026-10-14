@@ -406,14 +406,32 @@ def tif_to_png_overlay(tif_path: str) -> tuple[str, list]:
         bounds = transform_bounds(crs, "EPSG:4326", *bounds)
 
     rgb = np.transpose(arr, (1, 2, 0))  # (h, w, 3)
-    alpha = np.where(rgb.sum(axis=2) == 0, 0, 255).astype(np.uint8)
+    sin_dato = rgb.sum(axis=2) == 0
+    alpha = np.full(sin_dato.shape, 255, dtype=np.uint8)
     rgba = np.dstack([rgb, alpha])
+
+    # Las zonas sin dato (nubes enmascaradas) se pintan con un rayado gris
+    # semitransparente en vez de dejarlas transparentes: si quedaran
+    # transparentes, el mapa satelital de fondo (otra fecha, otra fuente) se
+    # veria como si fuera dato real de este mes.
+    h, w = sin_dato.shape
+    yy, xx = np.mgrid[0:h, 0:w]
+    raya = ((xx + yy) % 24) < 6
+    rgba[sin_dato & raya] = (60, 60, 60, 190)
+    rgba[sin_dato & ~raya] = (200, 200, 200, 90)
 
     png_path = tif_path.rsplit(".", 1)[0] + ".png"
     Image.fromarray(rgba, "RGBA").save(png_path)
 
     img_bounds = [[bounds[1], bounds[0]], [bounds[3], bounds[2]]]  # [[south, west], [north, east]]
     return png_path, img_bounds
+
+
+def calcular_cobertura(tif_path: str) -> float:
+    """Porcentaje del area de la imagen con dato satelital real (no nubes)."""
+    with rasterio.open(tif_path) as src:
+        arr = src.read()
+    return 100.0 * float((arr.sum(axis=0) != 0).mean())
 
 
 def agregar_basemap_satelital(mapa) -> None:
@@ -426,9 +444,9 @@ def agregar_basemap_satelital(mapa) -> None:
     folium.TileLayer(
         tiles="https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}",
         attr="Esri, Maxar, Earthstar Geographics",
-        name="Satelite",
+        name="Satelite Esri (fondo, sin fecha)",
         overlay=False,
-        control=False,
+        control=True,
     ).add_to(mapa)
 
 
@@ -478,6 +496,16 @@ NOTA_BASEMAP = (
     "Esri sin fecha exacta -- no corresponde al mes mostrado, es solo "
     "referencia visual del terreno."
 )
+
+
+def mostrar_cobertura(pct: float) -> None:
+    color = "#10b981" if pct >= 80 else ("#f59e0b" if pct >= 50 else "#ef4444")
+    st.markdown(
+        f'<div class="basemap-note" style="font-style:normal">'
+        f'Cobertura: <b style="color:{color}">{pct:.0f}%</b> · '
+        f'zonas rayadas = sin dato satelital ese mes (nubes)</div>',
+        unsafe_allow_html=True,
+    )
 
 
 def mostrar_nota_basemap() -> None:
@@ -680,7 +708,9 @@ with sidebar_col:
             for img in imgs:
                 checked = st.checkbox(
                     f"**{img['label']}**  `S-2`",
-                    key=f"cb_{tramo_activo.get('tramo_slug') or 'default'}_{img['filename']}",
+                    # Solo el mes en la key (sin tramo) para que la seleccion se
+                    # conserve al cambiar de tramo, igual que al cambiar de BPIN.
+                    key=f"cb_{img['filename']}",
                     value=False,
                 )
                 if checked:
@@ -780,9 +810,13 @@ with main_col:
 
         c1, c2, c3 = st.columns(3)
         with c1:
-            st.metric("Anterior", anterior["label"])
+            st.metric("Anterior", anterior["label"],
+                      f"Cobertura {0 if left_empty else calcular_cobertura(left_tif):.0f}%",
+                      delta_color="off")
         with c2:
-            st.metric("Reciente", reciente["label"])
+            st.metric("Reciente", reciente["label"],
+                      f"Cobertura {0 if right_empty else calcular_cobertura(right_tif):.0f}%",
+                      delta_color="off")
         with c3:
             if anterior["fecha"] and reciente["fecha"]:
                 delta = (reciente["fecha"] - anterior["fecha"]).days
@@ -830,3 +864,4 @@ with main_col:
                         if mostrar_marcador:
                             add_project_marker(gm, proj_lat, proj_lon, tramo_activo["nombre_tramo"])
                         render_map(gm, height=420)
+                        mostrar_cobertura(calcular_cobertura(item["tif"]))
